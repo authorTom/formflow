@@ -16,11 +16,15 @@ mkdirSync(UPLOAD_DIR, { recursive: true })
 
 export const db = new DatabaseSync(path.join(DATA_DIR, 'formflow.db'))
 
+// busy_timeout comes first: switching journal modes needs a lock on the file,
+// and without a timeout that fails outright if anything still holds it — which
+// happens routinely when `node --watch` starts the new process before the old
+// one has exited, and on a container restart after an unclean shutdown.
+db.exec('PRAGMA busy_timeout = 5000')
 // WAL lets readers run while a writer holds the file, which matters because
 // every public form view writes an analytics row.
 db.exec('PRAGMA journal_mode = WAL')
 db.exec('PRAGMA foreign_keys = ON')
-db.exec('PRAGMA busy_timeout = 5000')
 
 // --- Schema -----------------------------------------------------------------
 // Migrations are ordered SQL strings; PRAGMA user_version records how many have
