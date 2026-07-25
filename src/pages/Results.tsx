@@ -144,6 +144,7 @@ export function ResultsPage() {
               <thead>
                 <tr>
                   <th>Submitted</th>
+                  <th>Respondent</th>
                   <th>Status</th>
                   <th>Time</th>
                   {inputFields.map((field, index) => (
@@ -158,6 +159,15 @@ export function ResultsPage() {
                 {visible.map((response) => (
                   <tr key={response.id} onClick={() => setOpen(response)} style={{ cursor: 'pointer' }}>
                     <td style={{ whiteSpace: 'nowrap' }}>{formatDate(response.submittedAt || response.startedAt)}</td>
+                    <td className="cell-clip">
+                      {response.respondent ? (
+                        <span title={response.respondent.email}>
+                          {response.respondent.name || response.respondent.email}
+                        </span>
+                      ) : (
+                        <span className="muted">Anonymous</span>
+                      )}
+                    </td>
                     <td>
                       <span className={response.completed ? 'badge badge-live' : 'badge badge-draft'}>
                         {response.completed ? 'Complete' : 'Partial'}
@@ -199,7 +209,8 @@ export function ResultsPage() {
             <span className={open.completed ? 'badge badge-live' : 'badge badge-draft'}>
               {open.completed ? 'Complete' : 'Partial'}
             </span>
-            <span>Started {formatDate(open.startedAt)}</span>
+            <span>{open.respondent ? open.respondent.email : 'Anonymous'}</span>
+            <span>· Started {formatDate(open.startedAt)}</span>
             {open.submittedAt && <span>· Submitted {formatDate(open.submittedAt)}</span>}
             <span>· Took {formatDuration(open.durationMs)}</span>
           </div>

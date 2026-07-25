@@ -8,6 +8,15 @@ import { unlink } from 'node:fs/promises'
 import { db, newId, now, parseJson, uniqueSlug, UPLOAD_DIR } from '../db.mjs'
 import { requireAuth } from '../auth.mjs'
 import {
+  atLeast,
+  groupRole,
+  isAdmin,
+  listAccessibleForms,
+  requireFormAccess,
+  SHARE_ACCESS,
+} from '../permissions.mjs'
+import { audit } from '../audit.mjs'
+import {
   answerToText,
   formDoc,
   getFormRow,
@@ -15,41 +24,37 @@ import {
   publicFormDoc,
   replaceFormContent,
   responseWithAnswers,
+  sharesFor,
 } from '../model.mjs'
 
 export const formsRouter = Router()
 formsRouter.use(requireAuth)
 
-/** Loads req.params.id and rejects unless the signed-in user owns it. */
-function loadOwnedForm(req, res, next) {
-  const row = getFormRow(req.params.id)
-  if (!row || row.user_id !== req.user.id) return res.status(404).json({ error: 'Form not found' })
-  req.form = row
-  next()
+/**
+ * Can this user put a form into this group? Anything that creates or moves a
+ * form runs through here so an editor cannot deposit work into a group they
+ * only read, or one they are not in at all.
+ */
+function canCreateIn(user, groupId) {
+  if (isAdmin(user)) return !!db.prepare('SELECT 1 FROM groups WHERE id = ?').get(groupId)
+  const role = groupRole(user.id, groupId)
+  return role === 'manager' || role === 'editor'
 }
 
 // --- Collection -------------------------------------------------------------
 
 formsRouter.get('/', (req, res) => {
-  const rows = db
-    .prepare(
-      `SELECT f.*,
-              (SELECT COUNT(*) FROM responses r WHERE r.form_id = f.id AND r.completed = 1) AS completed_count,
-              (SELECT COUNT(*) FROM responses r WHERE r.form_id = f.id) AS response_count,
-              (SELECT COUNT(*) FROM views v WHERE v.form_id = f.id) AS view_count,
-              (SELECT COUNT(*) FROM fields fl WHERE fl.form_id = f.id) AS field_count
-         FROM forms f
-        WHERE f.user_id = ?
-        ORDER BY f.updated_at DESC`,
-    )
-    .all(req.user.id)
-
   res.json({
-    forms: rows.map((row) => ({
+    forms: listAccessibleForms(req.user).map(({ row, access }) => ({
       id: row.id,
       slug: row.slug,
       title: row.title,
       published: !!row.published,
+      access: row.access,
+      groupId: row.group_id,
+      groupName: row.group_name || null,
+      // What *this* user may do with it, so the client can hide what it must.
+      permission: access,
       theme: parseJson(row.theme_json, {}),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -65,15 +70,22 @@ formsRouter.get('/', (req, res) => {
 
 formsRouter.post('/', (req, res) => {
   const title = String(req.body?.title || 'Untitled form').slice(0, 200)
+  const groupId = String(req.body?.groupId || '')
+
+  if (!groupId) return res.status(400).json({ error: 'Choose a group to create this form in.' })
+  if (!canCreateIn(req.user, groupId))
+    return res.status(403).json({ error: 'You cannot create forms in that group.' })
+
   const id = newId()
   const timestamp = now()
 
   db.prepare(
-    `INSERT INTO forms (id, user_id, slug, title, published, welcome_json, theme_json, settings_json, created_at, updated_at)
-     VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
+    `INSERT INTO forms (id, user_id, group_id, slug, title, published, access, welcome_json, theme_json, settings_json, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, 0, 'internal', ?, ?, ?, ?, ?)`,
   ).run(
     id,
     req.user.id,
+    groupId,
     uniqueSlug(title),
     title,
     JSON.stringify(req.body?.welcome ?? { enabled: true, title, description: '', buttonText: 'Start' }),
@@ -102,25 +114,65 @@ formsRouter.post('/', (req, res) => {
     ],
   })
 
-  res.status(201).json({ form: formDoc(getFormRow(id)) })
+  audit(req.user, 'form.created', { targetType: 'form', targetId: id, detail: { title, groupId } })
+  res.status(201).json({ form: withPermission(formDoc(getFormRow(id)), 'manage') })
 })
 
 // --- Single form ------------------------------------------------------------
 
-formsRouter.get('/:id', loadOwnedForm, (req, res) => {
-  res.json({ form: formDoc(req.form) })
+/** Tells the client what it may do, so the builder can render read-only. */
+function withPermission(doc, permission) {
+  return { ...doc, permission }
+}
+
+formsRouter.get('/:id', requireFormAccess('view'), (req, res) => {
+  res.json({ form: withPermission(formDoc(req.form), req.formAccess) })
 })
 
 // The owner's own preview. Same payload the public route serves, but it works
 // on drafts and never counts as a view.
-formsRouter.get('/:id/preview', loadOwnedForm, (req, res) => {
+formsRouter.get('/:id/preview', requireFormAccess('view'), (req, res) => {
   res.json({ form: publicFormDoc(req.form) })
 })
 
-formsRouter.put('/:id', loadOwnedForm, (req, res) => {
+formsRouter.put('/:id', requireFormAccess('edit'), (req, res) => {
   const body = req.body || {}
   const current = req.form
   const title = String(body.title ?? current.title).slice(0, 200) || 'Untitled form'
+
+  // Who may fill this in is a security setting, not a content one, so it takes
+  // 'manage' — an editor can build the form but not open it to the world.
+  let access = current.access
+  if (body.access !== undefined && body.access !== current.access) {
+    if (!atLeast(req.formAccess, 'manage'))
+      return res.status(403).json({ error: 'Only a group manager can change who may fill this form in.' })
+    if (!['internal', 'link'].includes(body.access))
+      return res.status(400).json({ error: 'Unknown access setting.' })
+    access = body.access
+    audit(req.user, 'form.access_changed', {
+      targetType: 'form',
+      targetId: current.id,
+      detail: { title: current.title, from: current.access, to: access },
+    })
+  }
+
+  // Moving a form between groups changes who can see the results, so it needs
+  // 'manage' here and the right to create in the destination.
+  let groupId = current.group_id
+  if (body.groupId !== undefined && body.groupId !== current.group_id) {
+    if (!atLeast(req.formAccess, 'manage'))
+      return res.status(403).json({ error: 'Only a group manager can move this form.' })
+    if (!canCreateIn(req.user, String(body.groupId)))
+      return res.status(403).json({ error: 'You cannot move this form into that group.' })
+    groupId = String(body.groupId)
+    // A share with the new owning group would be redundant and confusing.
+    db.prepare('DELETE FROM form_shares WHERE form_id = ? AND group_id = ?').run(current.id, groupId)
+    audit(req.user, 'form.moved', {
+      targetType: 'form',
+      targetId: current.id,
+      detail: { title: current.title, from: current.group_id, to: groupId },
+    })
+  }
 
   // Keep the public URL in step with the title while the form is still private
   // and unanswered. Once it has been published or has collected a response, the
@@ -133,11 +185,13 @@ formsRouter.put('/:id', loadOwnedForm, (req, res) => {
 
   db.prepare(
     `UPDATE forms
-        SET title = ?, published = ?, welcome_json = ?, theme_json = ?, settings_json = ?, updated_at = ?
+        SET title = ?, published = ?, access = ?, group_id = ?, welcome_json = ?, theme_json = ?, settings_json = ?, updated_at = ?
       WHERE id = ?`,
   ).run(
     title,
     body.published === undefined ? current.published : body.published ? 1 : 0,
+    access,
+    groupId,
     JSON.stringify(body.welcome ?? parseJson(current.welcome_json, {})),
     JSON.stringify(body.theme ?? parseJson(current.theme_json, {})),
     JSON.stringify(body.settings ?? parseJson(current.settings_json, {})),
@@ -154,31 +208,46 @@ formsRouter.put('/:id', loadOwnedForm, (req, res) => {
     })
   }
 
-  res.json({ form: formDoc(getFormRow(current.id)) })
+  const updated = getFormRow(current.id)
+  res.json({ form: withPermission(formDoc(updated), req.formAccess) })
 })
 
-formsRouter.delete('/:id', loadOwnedForm, async (req, res) => {
+formsRouter.delete('/:id', requireFormAccess('manage'), async (req, res) => {
   // Remove uploaded files from disk first; the cascade takes their rows.
   const files = db.prepare('SELECT stored_name FROM uploads WHERE form_id = ?').all(req.form.id)
   db.prepare('DELETE FROM forms WHERE id = ?').run(req.form.id)
   await Promise.allSettled(files.map((f) => unlink(path.join(UPLOAD_DIR, f.stored_name))))
+  audit(req.user, 'form.deleted', {
+    targetType: 'form',
+    targetId: req.form.id,
+    detail: { title: req.form.title, groupId: req.form.group_id },
+  })
   res.json({ ok: true })
 })
 
-formsRouter.post('/:id/duplicate', loadOwnedForm, (req, res) => {
+formsRouter.post('/:id/duplicate', requireFormAccess('view'), (req, res) => {
   const source = formDoc(req.form)
+  // The copy lands in the group the caller asks for, defaulting to the
+  // original's. Someone who can only *view* a form may still take a copy into a
+  // group of their own — they are not gaining access to anyone's responses.
+  const groupId = String(req.body?.groupId || req.form.group_id || '')
+  if (!canCreateIn(req.user, groupId))
+    return res.status(403).json({ error: 'You cannot create forms in that group.' })
+
   const id = newId()
   const timestamp = now()
   const title = `${source.title} (copy)`
 
   db.prepare(
-    `INSERT INTO forms (id, user_id, slug, title, published, welcome_json, theme_json, settings_json, created_at, updated_at)
-     VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
+    `INSERT INTO forms (id, user_id, group_id, slug, title, published, access, welcome_json, theme_json, settings_json, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     req.user.id,
+    groupId,
     uniqueSlug(title),
     title,
+    source.access,
     JSON.stringify(source.welcome),
     JSON.stringify(source.theme),
     JSON.stringify(source.settings),
@@ -189,12 +258,69 @@ formsRouter.post('/:id/duplicate', loadOwnedForm, (req, res) => {
   // Ids are copied verbatim: they are unique per form, and keeping them means
   // logic rules in the duplicate still resolve without rewriting every target.
   replaceFormContent(id, { fields: source.fields, endings: source.endings })
-  res.status(201).json({ form: formDoc(getFormRow(id)) })
+  audit(req.user, 'form.duplicated', { targetType: 'form', targetId: id, detail: { from: req.form.id, groupId } })
+  res.status(201).json({ form: withPermission(formDoc(getFormRow(id)), 'manage') })
+})
+
+// --- Sharing with other groups ----------------------------------------------
+
+formsRouter.get('/:id/shares', requireFormAccess('view'), (req, res) => {
+  res.json({
+    shares: sharesFor(req.form.id),
+    // Groups this form could be shared with: any group for an administrator,
+    // otherwise only groups the caller is actually in — you should not be able
+    // to hand results to a team you have nothing to do with. The owning group
+    // is excluded either way, since it already has access.
+    candidates: db
+      .prepare(
+        `SELECT g.id, g.name
+           FROM groups g
+          WHERE g.id IS NOT :formGroup
+            AND (:admin = 1
+                 OR EXISTS (SELECT 1 FROM group_members gm
+                             WHERE gm.group_id = g.id AND gm.user_id = :uid))
+          ORDER BY g.name COLLATE NOCASE`,
+      )
+      .all({ uid: req.user.id, admin: isAdmin(req.user) ? 1 : 0, formGroup: req.form.group_id }),
+  })
+})
+
+formsRouter.put('/:id/shares/:groupId', requireFormAccess('manage'), (req, res) => {
+  const groupId = String(req.params.groupId)
+  const access = SHARE_ACCESS.includes(req.body?.access) ? req.body.access : 'view'
+
+  if (groupId === req.form.group_id)
+    return res.status(400).json({ error: 'That group already owns this form.' })
+  const group = db.prepare('SELECT id, name FROM groups WHERE id = ?').get(groupId)
+  if (!group) return res.status(404).json({ error: 'Group not found' })
+
+  db.prepare(
+    `INSERT INTO form_shares (form_id, group_id, access, created_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(form_id, group_id) DO UPDATE SET access = excluded.access`,
+  ).run(req.form.id, groupId, access, now())
+
+  audit(req.user, 'form.shared', {
+    targetType: 'form',
+    targetId: req.form.id,
+    detail: { title: req.form.title, group: group.name, access },
+  })
+  res.json({ shares: sharesFor(req.form.id) })
+})
+
+formsRouter.delete('/:id/shares/:groupId', requireFormAccess('manage'), (req, res) => {
+  const group = db.prepare('SELECT id, name FROM groups WHERE id = ?').get(req.params.groupId)
+  db.prepare('DELETE FROM form_shares WHERE form_id = ? AND group_id = ?').run(req.form.id, req.params.groupId)
+  audit(req.user, 'form.unshared', {
+    targetType: 'form',
+    targetId: req.form.id,
+    detail: { title: req.form.title, group: group?.name || req.params.groupId },
+  })
+  res.json({ shares: sharesFor(req.form.id) })
 })
 
 // --- Responses --------------------------------------------------------------
 
-formsRouter.get('/:id/responses', loadOwnedForm, (req, res) => {
+formsRouter.get('/:id/responses', requireFormAccess('view'), (req, res) => {
   const rows = db
     .prepare('SELECT * FROM responses WHERE form_id = ? ORDER BY started_at DESC LIMIT 1000')
     .all(req.form.id)
@@ -209,7 +335,7 @@ formsRouter.get('/:id/responses', loadOwnedForm, (req, res) => {
   })
 })
 
-formsRouter.delete('/:id/responses/:responseId', loadOwnedForm, async (req, res) => {
+formsRouter.delete('/:id/responses/:responseId', requireFormAccess('edit'), async (req, res) => {
   const files = db
     .prepare('SELECT stored_name FROM uploads WHERE response_id = ? AND form_id = ?')
     .all(req.params.responseId, req.form.id)
@@ -221,12 +347,18 @@ formsRouter.delete('/:id/responses/:responseId', loadOwnedForm, async (req, res)
 // --- Export -----------------------------------------------------------------
 
 function csvCell(value) {
-  const text = String(value ?? '')
+  let text = String(value ?? '')
+  // A cell opening with one of these is treated as a formula by Excel, Sheets
+  // and LibreOffice — so a respondent could type =HYPERLINK(...) into a form and
+  // have it execute on whoever opens the export. A leading apostrophe makes the
+  // spreadsheet read it as text. Tab and CR are here because they are stripped
+  // before the formula check happens in some versions.
+  if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`
   // Quote whenever the value could break the row, and double any inner quotes.
   return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
 }
 
-formsRouter.get('/:id/export', loadOwnedForm, (req, res) => {
+formsRouter.get('/:id/export', requireFormAccess('view'), (req, res) => {
   const doc = formDoc(req.form)
   const rows = db
     .prepare('SELECT * FROM responses WHERE form_id = ? ORDER BY started_at DESC')
@@ -244,13 +376,14 @@ formsRouter.get('/:id/export', loadOwnedForm, (req, res) => {
     })
   }
 
-  const header = ['Response ID', 'Started at', 'Submitted at', 'Completed', 'Duration (s)'].concat(
+  const header = ['Response ID', 'Respondent', 'Started at', 'Submitted at', 'Completed', 'Duration (s)'].concat(
     inputFields.map((f, i) => f.title || `Question ${i + 1}`),
   )
   const lines = [header.map(csvCell).join(',')]
   for (const response of responses) {
     const row = [
       response.id,
+      response.respondent?.email || 'Anonymous',
       response.startedAt,
       response.submittedAt || '',
       response.completed ? 'yes' : 'no',
@@ -268,7 +401,7 @@ formsRouter.get('/:id/export', loadOwnedForm, (req, res) => {
 
 // --- Analytics --------------------------------------------------------------
 
-formsRouter.get('/:id/analytics', loadOwnedForm, (req, res) => {
+formsRouter.get('/:id/analytics', requireFormAccess('view'), (req, res) => {
   const doc = formDoc(req.form)
   const formId = req.form.id
 
@@ -379,7 +512,7 @@ formsRouter.get('/:id/analytics', loadOwnedForm, (req, res) => {
 
 // --- Uploaded files ---------------------------------------------------------
 
-formsRouter.get('/:id/uploads/:uploadId', loadOwnedForm, (req, res) => {
+formsRouter.get('/:id/uploads/:uploadId', requireFormAccess('view'), (req, res) => {
   const file = db
     .prepare('SELECT * FROM uploads WHERE id = ? AND form_id = ?')
     .get(req.params.uploadId, req.form.id)

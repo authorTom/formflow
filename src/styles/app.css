@@ -770,6 +770,13 @@
   gap: 16px;
 }
 
+/* A grid item's automatic minimum size is its min-content, and the embed
+   snippet is one unbreakable line — without this the whole column stretches to
+   the width of that <pre> and the page scrolls sideways. */
+.share-page > * {
+  min-width: 0;
+}
+
 .link-box {
   display: flex;
   align-items: center;
@@ -993,4 +1000,214 @@ table.data td.cell-clip {
   font-size: 0.85rem;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* --- People, groups and administration ------------------------------------ */
+
+/* A narrower column for read-and-fill-in pages like the account screen, where
+   full-width form fields would be uncomfortable to scan. */
+.page-narrow {
+  max-width: 720px;
+}
+
+.page-narrow .card + .card {
+  margin-top: 16px;
+}
+
+.header-nav {
+  gap: 2px;
+}
+
+.header-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 11px;
+  border-radius: 8px;
+  font-size: 0.86rem;
+  font-weight: 550;
+  color: var(--text-muted);
+}
+
+.header-link:hover {
+  color: var(--text);
+  background: var(--surface-2);
+  text-decoration: none;
+}
+
+.header-link-active {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+/* Instance overview counters at the top of the admin screen. */
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+  gap: 10px;
+  margin-bottom: 22px;
+}
+
+.stat-card {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 13px 15px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+
+.stat-card b {
+  font-size: 1.5rem;
+  font-weight: 680;
+  line-height: 1.15;
+}
+
+.stat-card > span {
+  font-size: 0.78rem;
+  font-weight: 560;
+  color: var(--text-muted);
+}
+
+.stat-card em {
+  font-style: normal;
+}
+
+/* Draws the eye to a count that an operator of an internal instance would want
+   to notice — forms open to the world, suspended accounts. */
+.stat-card-warn {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+.stat-card-warn b {
+  color: var(--accent);
+}
+
+/* Group membership pills. */
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-subtle);
+  font-size: 0.78rem;
+  font-weight: 550;
+  color: var(--text);
+}
+
+.chip:hover {
+  border-color: var(--accent-line);
+  text-decoration: none;
+}
+
+.chip em {
+  font-style: normal;
+  font-size: 0.7rem;
+  color: var(--text-faint);
+}
+
+/* A suspended account, an expired invitation — present but no longer live. */
+.row-muted td {
+  opacity: 0.58;
+}
+
+.input-sm {
+  padding: 5px 8px;
+  font-size: 0.82rem;
+}
+
+/* Full-width notice under the header, e.g. read-only access to a form. */
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 20px;
+  background: var(--accent-soft);
+  border-bottom: 1px solid var(--accent-line);
+  color: var(--text);
+  font-size: 0.86rem;
+}
+
+/* --- Form access and sharing ---------------------------------------------- */
+
+.access-list {
+  display: grid;
+  gap: 8px;
+}
+
+.access-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-subtle);
+  cursor: pointer;
+  transition: border-color 0.14s var(--ease), background 0.14s var(--ease);
+}
+
+.access-option:hover {
+  border-color: var(--accent-line);
+}
+
+.access-option-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.access-option input {
+  margin-top: 3px;
+  flex: none;
+  accent-color: var(--accent);
+}
+
+.access-option > span {
+  display: grid;
+  gap: 3px;
+}
+
+.access-option em {
+  font-style: normal;
+  line-height: 1.5;
+}
+
+.access-option:has(input:disabled) {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.share-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 9px 13px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-subtle);
+}
+
+/* Whether a live form needs a sign-in. Only shown once published, where the
+   distinction actually has consequences. */
+.badge-open {
+  background: var(--warning-soft);
+  color: var(--warning);
+  border-color: transparent;
+}
+
+.badge-internal {
+  background: var(--bg-subtle);
+  color: var(--text-muted);
 }

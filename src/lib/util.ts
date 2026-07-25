@@ -36,6 +36,21 @@ export function formatRelative(iso: string) {
   return new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
 }
 
+/**
+ * Counterpart to formatRelative for timestamps in the future — an invitation's
+ * expiry, say. formatRelative would call every one of those "just now", since
+ * it only ever measures how long ago something happened.
+ */
+export function formatUntil(iso: string) {
+  const diff = Date.parse(iso) - Date.now()
+  if (diff <= 0) return 'now'
+  const minutes = Math.round(diff / 60_000)
+  if (minutes < 60) return `in ${Math.max(1, minutes)}m`
+  const hours = Math.round(minutes / 60)
+  if (hours < 48) return `in ${hours}h`
+  return `in ${Math.round(hours / 24)}d`
+}
+
 export function formatDuration(ms: number | null) {
   if (ms == null || !Number.isFinite(ms)) return '—'
   const seconds = Math.round(ms / 1000)

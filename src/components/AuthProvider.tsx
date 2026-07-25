@@ -1,14 +1,22 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { api } from '../lib/api'
-import type { User } from '../lib/types'
+import type { Group, GroupRole, User } from '../lib/types'
 
 interface AuthState {
   user: User | null
   loading: boolean
+  /** Groups the signed-in user belongs to, with their role in each. */
+  groups: Group[]
+  isAdmin: boolean
+  /** Groups they may create a form in — anywhere they are not merely a viewer. */
+  writableGroups: Group[]
+  roleIn: (groupId: string | null) => GroupRole | null
   login: (email: string, password: string) => Promise<void>
-  register: (email: string, password: string, name: string) => Promise<void>
+  register: (email: string, password: string, name: string, invite?: string) => Promise<void>
   logout: () => Promise<void>
+  /** Re-reads the session, e.g. after group membership changes. */
+  refresh: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthState | null>(null)
@@ -36,8 +44,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(next)
   }, [])
 
-  const register = useCallback(async (email: string, password: string, name: string) => {
-    const { user: next } = await api.register(email, password, name)
+  const register = useCallback(async (email: string, password: string, name: string, invite?: string) => {
+    const { user: next } = await api.register(email, password, name, invite)
     setUser(next)
   }, [])
 
@@ -46,7 +54,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null)
   }, [])
 
-  const value = useMemo(() => ({ user, loading, login, register, logout }), [user, loading, login, register, logout])
+  const refresh = useCallback(async () => {
+    const data = await api.me().catch(() => ({ user: null }))
+    setUser(data.user)
+  }, [])
+
+  const value = useMemo<AuthState>(() => {
+    const groups = user?.groups ?? []
+    return {
+      user,
+      loading,
+      groups,
+      isAdmin: user?.role === 'admin',
+      // An administrator is not automatically in every group, but may act in
+      // any of them, so the server accepts whatever it is given. The client
+      // still offers only the groups it knows about.
+      writableGroups: groups.filter((g) => g.role === 'manager' || g.role === 'editor'),
+      roleIn: (groupId) => groups.find((g) => g.id === groupId)?.role ?? null,
+      login,
+      register,
+      logout,
+      refresh,
+    }
+  }, [user, loading, login, register, logout, refresh])
+
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }
 
