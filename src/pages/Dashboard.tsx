@@ -1,30 +1,37 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import {
   BarChart3,
   Copy,
   ExternalLink,
   FilePlus2,
+  Globe,
   Inbox,
   Link2,
+  Lock,
   MoreHorizontal,
   Pencil,
   Plus,
   Trash2,
+  Users,
 } from 'lucide-react'
 import { AppHeader } from '../components/AppHeader'
-import { ConfirmDialog } from '../components/Modal'
+import { ConfirmDialog, Modal } from '../components/Modal'
 import { useToast } from '../components/Toast'
+import { useAuth } from '../components/AuthProvider'
 import { api, ApiError } from '../lib/api'
-import type { FormSummary } from '../lib/types'
+import type { FormSummary, Group } from '../lib/types'
 import { formatRelative, percent } from '../lib/util'
 import { mergeTheme } from '../lib/theme'
 
 export function DashboardPage() {
   const [forms, setForms] = useState<FormSummary[] | null>(null)
   const [creating, setCreating] = useState(false)
+  const [choosingGroup, setChoosingGroup] = useState(false)
+  const [groupFilter, setGroupFilter] = useState<string>('all')
   const [pendingDelete, setPendingDelete] = useState<FormSummary | null>(null)
   const { toast, error } = useToast()
+  const { groups, writableGroups, isAdmin } = useAuth()
   const navigate = useNavigate()
 
   const load = useCallback(() => {
@@ -39,16 +46,46 @@ export function DashboardPage() {
 
   useEffect(load, [load])
 
-  const createForm = async () => {
+  // Groups worth offering as a filter: the ones the visible forms actually sit
+  // in, so an admin on a large instance is not given a list of every group.
+  const filterGroups = useMemo(() => {
+    const seen = new Map<string, string>()
+    for (const form of forms ?? []) {
+      if (form.groupId) seen.set(form.groupId, form.groupName || 'Unknown group')
+    }
+    return [...seen.entries()].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name))
+  }, [forms])
+
+  const shown = useMemo(
+    () => (forms ?? []).filter((form) => groupFilter === 'all' || form.groupId === groupFilter),
+    [forms, groupFilter],
+  )
+
+  const createIn = async (groupId: string) => {
     setCreating(true)
     try {
-      const { form } = await api.createForm('Untitled form')
+      const { form } = await api.createForm('Untitled form', groupId)
       navigate(`/forms/${form.id}`)
     } catch (err) {
       error(err instanceof ApiError ? err.message : 'Could not create the form.')
     } finally {
       setCreating(false)
+      setChoosingGroup(false)
     }
+  }
+
+  // An administrator can create anywhere, so they get the full list; everyone
+  // else only sees groups they are a manager or editor in.
+  const creatableGroups: Group[] = isAdmin ? groups : writableGroups
+
+  const startCreate = () => {
+    if (creatableGroups.length === 0) {
+      error('You are not an editor in any group yet. Ask an administrator to add you to one.')
+      return
+    }
+    // With exactly one option there is nothing to decide.
+    if (creatableGroups.length === 1) return createIn(creatableGroups[0].id)
+    setChoosingGroup(true)
   }
 
   const duplicate = async (form: FormSummary) => {
@@ -56,8 +93,8 @@ export function DashboardPage() {
       await api.duplicateForm(form.id)
       toast(`Duplicated “${form.title}”`)
       load()
-    } catch {
-      error('Could not duplicate that form.')
+    } catch (err) {
+      error(err instanceof ApiError ? err.message : 'Could not duplicate that form.')
     }
   }
 
@@ -66,8 +103,8 @@ export function DashboardPage() {
       await api.deleteForm(form.id)
       setForms((current) => (current || []).filter((item) => item.id !== form.id))
       toast('Form deleted')
-    } catch {
-      error('Could not delete that form.')
+    } catch (err) {
+      error(err instanceof ApiError ? err.message : 'Could not delete that form.')
     }
   }
 
@@ -85,7 +122,7 @@ export function DashboardPage() {
     <div className="app-shell">
       <AppHeader
         right={
-          <button className="btn btn-primary" onClick={createForm} disabled={creating}>
+          <button className="btn btn-primary" onClick={startCreate} disabled={creating}>
             <Plus size={16} />
             New form
           </button>
@@ -95,16 +132,42 @@ export function DashboardPage() {
       <main className="page">
         <div className="page-head">
           <div>
-            <h1>Your forms</h1>
+            <h1>Forms</h1>
             <p className="muted small">
               {forms == null
                 ? 'Loading…'
                 : forms.length === 0
                   ? 'Nothing here yet.'
-                  : `${forms.length} form${forms.length === 1 ? '' : 's'}`}
+                  : `${shown.length} form${shown.length === 1 ? '' : 's'}${
+                      groupFilter === 'all' ? ' across your groups' : ''
+                    }`}
             </p>
           </div>
         </div>
+
+        {filterGroups.length > 1 && (
+          <div className="tabbar" role="tablist" style={{ marginBottom: 18 }}>
+            <button
+              role="tab"
+              aria-selected={groupFilter === 'all'}
+              className={`tab ${groupFilter === 'all' ? 'active' : ''}`}
+              onClick={() => setGroupFilter('all')}
+            >
+              All groups
+            </button>
+            {filterGroups.map((group) => (
+              <button
+                key={group.id}
+                role="tab"
+                aria-selected={groupFilter === group.id}
+                className={`tab ${groupFilter === group.id ? 'active' : ''}`}
+                onClick={() => setGroupFilter(group.id)}
+              >
+                {group.name}
+              </button>
+            ))}
+          </div>
+        )}
 
         {forms == null ? (
           <div className="form-grid">
@@ -112,29 +175,35 @@ export function DashboardPage() {
               <div key={index} className="skeleton" style={{ height: 168, borderRadius: 14 }} />
             ))}
           </div>
-        ) : forms.length === 0 ? (
+        ) : shown.length === 0 ? (
           <div className="empty">
             <span className="empty-mark">
-              <FilePlus2 size={22} />
+              {creatableGroups.length === 0 ? <Users size={22} /> : <FilePlus2 size={22} />}
             </span>
             <div>
-              <h2 style={{ marginBottom: 4 }}>Create your first form</h2>
+              <h2 style={{ marginBottom: 4 }}>
+                {creatableGroups.length === 0 ? 'Nothing to show yet' : 'Create your first form'}
+              </h2>
               <p className="muted small" style={{ maxWidth: '34em' }}>
-                Add questions, branch with logic, theme it to match your brand, then share a link. Responses
-                and analytics land here.
+                {creatableGroups.length === 0
+                  ? 'Forms belong to groups. You are not an editor in any group yet — ask an administrator to add you to one.'
+                  : 'Add questions, branch with logic, theme it to match your brand, then share it with your colleagues. Responses and analytics land here.'}
               </p>
             </div>
-            <button className="btn btn-primary btn-lg" onClick={createForm} disabled={creating}>
-              <Plus size={17} />
-              New form
-            </button>
+            {creatableGroups.length > 0 && (
+              <button className="btn btn-primary btn-lg" onClick={startCreate} disabled={creating}>
+                <Plus size={17} />
+                New form
+              </button>
+            )}
           </div>
         ) : (
           <div className="form-grid">
-            {forms.map((form) => (
+            {shown.map((form) => (
               <FormCard
                 key={form.id}
                 form={form}
+                showGroup={groupFilter === 'all'}
                 onDuplicate={() => duplicate(form)}
                 onDelete={() => setPendingDelete(form)}
                 onCopyLink={() => copyLink(form)}
@@ -143,6 +212,29 @@ export function DashboardPage() {
           </div>
         )}
       </main>
+
+      {choosingGroup && (
+        <Modal title="Which group is this form for?" onClose={() => setChoosingGroup(false)}>
+          <p className="muted small" style={{ marginBottom: 14 }}>
+            The group owns the form and its responses. You can share it with other groups later.
+          </p>
+          <div className="col" style={{ gap: 8 }}>
+            {creatableGroups.map((group) => (
+              <button
+                key={group.id}
+                className="btn btn-block"
+                style={{ justifyContent: 'flex-start' }}
+                disabled={creating}
+                onClick={() => createIn(group.id)}
+              >
+                <Users size={15} />
+                {group.name}
+                {group.role && <span className="muted tiny">· you are a {group.role}</span>}
+              </button>
+            ))}
+          </div>
+        </Modal>
+      )}
 
       {pendingDelete && (
         <ConfirmDialog
@@ -162,16 +254,19 @@ export function DashboardPage() {
 
 interface CardProps {
   form: FormSummary
+  showGroup: boolean
   onDuplicate: () => void
   onDelete: () => void
   onCopyLink: () => void
 }
 
-function FormCard({ form, onDuplicate, onDelete, onCopyLink }: CardProps) {
+function FormCard({ form, showGroup, onDuplicate, onDelete, onCopyLink }: CardProps) {
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
   const theme = mergeTheme(form.theme)
   const { starts, completions, views, fields } = form.stats
+  const canEdit = form.permission === 'edit' || form.permission === 'manage'
+  const canManage = form.permission === 'manage'
 
   useEffect(() => {
     if (!menuOpen) return
@@ -187,6 +282,21 @@ function FormCard({ form, onDuplicate, onDelete, onCopyLink }: CardProps) {
       <div className="row-between">
         <span className="form-card-swatch" style={{ background: theme.accent }} />
         <div className="row" style={{ gap: 6 }}>
+          {/* A published form open to anyone with the link is the one state
+              worth calling out on an internal instance. */}
+          {form.published && (
+            <span
+              className={`badge ${form.access === 'link' ? 'badge-open' : 'badge-internal'}`}
+              title={
+                form.access === 'link'
+                  ? 'Anyone with the link can respond, without signing in'
+                  : 'Only signed-in people can respond'
+              }
+            >
+              {form.access === 'link' ? <Globe size={11} /> : <Lock size={11} />}
+              {form.access === 'link' ? 'Open' : 'Internal'}
+            </span>
+          )}
           <span className={form.published ? 'badge badge-live' : 'badge badge-draft'}>
             {form.published ? 'Live' : 'Draft'}
           </span>
@@ -202,7 +312,7 @@ function FormCard({ form, onDuplicate, onDelete, onCopyLink }: CardProps) {
               <div className="menu">
                 <Link className="menu-item" to={`/forms/${form.id}`}>
                   <Pencil size={15} />
-                  Edit
+                  {canEdit ? 'Edit' : 'Open'}
                 </Link>
                 <Link className="menu-item" to={`/forms/${form.id}/results`}>
                   <Inbox size={15} />
@@ -224,11 +334,15 @@ function FormCard({ form, onDuplicate, onDelete, onCopyLink }: CardProps) {
                   <Copy size={15} />
                   Duplicate
                 </button>
-                <hr className="divider" style={{ margin: '4px 0' }} />
-                <button className="menu-item menu-item-danger" onClick={onDelete}>
-                  <Trash2 size={15} />
-                  Delete
-                </button>
+                {canManage && (
+                  <>
+                    <hr className="divider" style={{ margin: '4px 0' }} />
+                    <button className="menu-item menu-item-danger" onClick={onDelete}>
+                      <Trash2 size={15} />
+                      Delete
+                    </button>
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -240,7 +354,14 @@ function FormCard({ form, onDuplicate, onDelete, onCopyLink }: CardProps) {
           {form.title || 'Untitled form'}
         </Link>
         <p className="muted tiny" style={{ marginTop: 2 }}>
+          {showGroup && form.groupName && (
+            <>
+              <Link to={`/groups/${form.groupId}`}>{form.groupName}</Link>
+              {' · '}
+            </>
+          )}
           {fields} question{fields === 1 ? '' : 's'} · edited {formatRelative(form.updatedAt)}
+          {form.permission === 'view' && ' · shared with you'}
         </p>
       </div>
 

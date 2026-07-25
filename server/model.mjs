@@ -65,13 +65,35 @@ function endingsFor(formId) {
     }))
 }
 
+/** Groups a form has been shared with, beyond the group that owns it. */
+export function sharesFor(formId) {
+  return db
+    .prepare(
+      `SELECT s.group_id, s.access, g.name
+         FROM form_shares s JOIN groups g ON g.id = s.group_id
+        WHERE s.form_id = ?
+        ORDER BY g.name COLLATE NOCASE`,
+    )
+    .all(formId)
+    .map((row) => ({ groupId: row.group_id, groupName: row.name, access: row.access }))
+}
+
 /** Full editable document for the builder. */
 export function formDoc(row) {
+  const group = row.group_id
+    ? db.prepare('SELECT id, name FROM groups WHERE id = ?').get(row.group_id)
+    : null
+
   return {
     id: row.id,
     slug: row.slug,
     title: row.title,
     published: !!row.published,
+    // 'internal' — must be signed in to fill in; 'link' — anyone with the URL.
+    access: row.access || 'internal',
+    groupId: row.group_id || null,
+    groupName: group?.name || null,
+    shares: sharesFor(row.id),
     welcome: parseJson(row.welcome_json, {}),
     theme: parseJson(row.theme_json, {}),
     settings: parseJson(row.settings_json, {}),
@@ -94,6 +116,7 @@ export function publicFormDoc(row) {
     id: doc.id,
     slug: doc.slug,
     title: doc.title,
+    access: doc.access,
     welcome: doc.welcome,
     theme: doc.theme,
     settings: doc.settings,
@@ -175,9 +198,17 @@ export function responseWithAnswers(responseRow) {
     .all(responseRow.id)
   const byField = {}
   for (const answer of answers) byField[answer.field_id] = parseJson(answer.value_json, null)
+
+  // Attribution exists only for forms that required a sign-in. Anonymous
+  // responses have no user_id and stay anonymous.
+  const respondent = responseRow.user_id
+    ? db.prepare('SELECT id, email, name FROM users WHERE id = ?').get(responseRow.user_id)
+    : null
+
   return {
     id: responseRow.id,
     formId: responseRow.form_id,
+    respondent: respondent ? { id: respondent.id, email: respondent.email, name: respondent.name } : null,
     startedAt: responseRow.started_at,
     submittedAt: responseRow.submitted_at,
     completed: !!responseRow.completed,

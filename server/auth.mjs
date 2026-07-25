@@ -53,7 +53,7 @@ export function userForToken(token) {
   if (!token) return null
   const row = db
     .prepare(
-      `SELECT u.id, u.email, u.name, s.expires_at
+      `SELECT u.id, u.email, u.name, u.role, u.status, s.expires_at
          FROM sessions s JOIN users u ON u.id = s.user_id
         WHERE s.token = ?`,
     )
@@ -63,7 +63,22 @@ export function userForToken(token) {
     destroySession(token)
     return null
   }
-  return { id: row.id, email: row.email, name: row.name }
+  // Suspension is checked on every request, not just at sign-in, so revoking
+  // someone's access takes effect immediately rather than in up to 30 days.
+  if (row.status !== 'active') {
+    destroyAllSessions(row.id)
+    return null
+  }
+  return { id: row.id, email: row.email, name: row.name, role: row.role, status: row.status }
+}
+
+/** Used when suspending an account, changing a password, or signing out everywhere. */
+export function destroyAllSessions(userId, { except } = {}) {
+  if (except) {
+    db.prepare('DELETE FROM sessions WHERE user_id = ? AND token != ?').run(userId, except)
+  } else {
+    db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId)
+  }
 }
 
 export function setSessionCookie(res, token, expires) {
@@ -104,14 +119,32 @@ export function purgeExpiredSessions() {
   db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(now())
 }
 
-export function createUser({ email, name, passwordHash }) {
+export function createUser({ email, name, passwordHash, role = 'member' }) {
   const id = newId()
   db.prepare(
-    'INSERT INTO users (id, email, name, password_hash, created_at) VALUES (?, ?, ?, ?, ?)',
-  ).run(id, email, name, passwordHash, now())
-  return { id, email, name }
+    'INSERT INTO users (id, email, name, password_hash, role, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+  ).run(id, email, name, passwordHash, role, 'active', now())
+  return { id, email, name, role, status: 'active' }
 }
 
 export function findUserByEmail(email) {
   return db.prepare('SELECT * FROM users WHERE email = ?').get(String(email).toLowerCase().trim())
+}
+
+/** Shape handed to the client. Never includes the password hash. */
+export function publicUser(row) {
+  return { id: row.id, email: row.email, name: row.name, role: row.role, status: row.status }
+}
+
+/**
+ * Zero users means a brand-new instance that nobody can sign in to and nobody
+ * can be invited to — so the very first registration is allowed through without
+ * an invite and becomes the administrator. Every later one needs an invite.
+ */
+export function isFirstRun() {
+  return db.prepare('SELECT COUNT(*) AS n FROM users').get().n === 0
+}
+
+export async function setPassword(userId, password) {
+  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(await hashPassword(password), userId)
 }

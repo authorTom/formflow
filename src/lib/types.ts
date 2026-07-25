@@ -106,11 +106,28 @@ export interface FormSettings {
   closedMessage: string
 }
 
+/** Who may fill a form in. 'internal' needs a signed-in account. */
+export type FormAccess = 'internal' | 'link'
+
+/** What the signed-in user may do with a form. Ordered: view < edit < manage. */
+export type Permission = 'view' | 'edit' | 'manage'
+
+export interface FormShare {
+  groupId: string
+  groupName: string
+  access: 'edit' | 'view'
+}
+
 export interface FormDoc {
   id: string
   slug: string
   title: string
   published: boolean
+  access: FormAccess
+  groupId: string | null
+  groupName: string | null
+  shares: FormShare[]
+  permission: Permission
   welcome: Welcome
   theme: Theme
   settings: FormSettings
@@ -123,7 +140,7 @@ export interface FormDoc {
 /** What /api/public/forms/:slug returns — no owner-only metadata. */
 export type PublicForm = Pick<
   FormDoc,
-  'id' | 'slug' | 'title' | 'welcome' | 'theme' | 'settings' | 'fields' | 'endings'
+  'id' | 'slug' | 'title' | 'access' | 'welcome' | 'theme' | 'settings' | 'fields' | 'endings'
 >
 
 export interface FormSummary {
@@ -131,6 +148,10 @@ export interface FormSummary {
   slug: string
   title: string
   published: boolean
+  access: FormAccess
+  groupId: string | null
+  groupName: string | null
+  permission: Permission
   theme: Theme
   createdAt: string
   updatedAt: string
@@ -144,6 +165,8 @@ export type AnswerMap = Record<string, AnswerValue>
 export interface ResponseRecord {
   id: string
   formId: string
+  /** Null when the form was open to anyone with the link — those stay anonymous. */
+  respondent: { id: string; email: string; name: string } | null
   startedAt: string
   submittedAt: string | null
   completed: boolean
@@ -162,10 +185,93 @@ export interface UploadRecord {
   mime: string
 }
 
+/** System-wide role. Administrators run the instance; members do not. */
+export type SystemRole = 'admin' | 'member'
+
+/** Role within one group. */
+export type GroupRole = 'manager' | 'editor' | 'viewer'
+
+export interface Group {
+  id: string
+  name: string
+  description: string
+  /** The signed-in user's role here, or null when they are not a member. */
+  role: GroupRole | null
+  memberCount: number
+  formCount: number
+}
+
+export interface GroupMember {
+  id: string
+  email: string
+  name: string
+  status: 'active' | 'suspended'
+  systemRole: SystemRole
+  role: GroupRole
+  joinedAt: string
+}
+
+export interface GroupDetail {
+  group: { id: string; name: string; description: string; role: GroupRole; createdAt: string }
+  members: GroupMember[]
+  candidates: { id: string; email: string; name: string }[]
+}
+
 export interface User {
   id: string
   email: string
   name: string
+  role: SystemRole
+  status: 'active' | 'suspended'
+  /** Present on the signed-in user; the groups they belong to, with their role. */
+  groups?: Group[]
+}
+
+export interface AdminUser {
+  id: string
+  email: string
+  name: string
+  role: SystemRole
+  status: 'active' | 'suspended'
+  createdAt: string
+  groups: { id: string; name: string; role: GroupRole }[]
+  formCount: number
+  activeSessions: number
+}
+
+export interface Invite {
+  token: string
+  email: string
+  role: SystemRole
+  groupId: string | null
+  groupName: string | null
+  groupRole: GroupRole
+  createdAt: string
+  expiresAt: string
+  acceptedAt: string | null
+  status: 'pending' | 'accepted' | 'expired'
+}
+
+export interface AuditEntry {
+  id: number
+  at: string
+  actorId: string | null
+  actorEmail: string
+  action: string
+  targetType: string
+  targetId: string
+  detail: Record<string, unknown>
+}
+
+export interface InstanceOverview {
+  users: number
+  admins: number
+  suspended: number
+  groups: number
+  forms: number
+  openForms: number
+  pendingInvites: number
+  responses: number
 }
 
 export interface Analytics {

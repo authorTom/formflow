@@ -82,6 +82,9 @@ export function BuilderPage() {
         const { form } = await api.saveForm(next.id, {
           title: next.title,
           published: next.published,
+          // Unchanged values are ignored server-side, so sending these always is
+          // harmless — the permission check only fires on an actual change.
+          access: next.access,
           welcome: next.welcome,
           theme: next.theme,
           settings: next.settings,
@@ -101,8 +104,10 @@ export function BuilderPage() {
 
   // Debounced autosave: every edit schedules a write, and a new edit within the
   // window replaces it, so holding a key does not queue a request per keystroke.
+  // Skipped entirely for someone with read-only access — the server would refuse
+  // the write, and the resulting error would be baffling.
   useEffect(() => {
-    if (!doc || revision.current === savedRevision.current) return
+    if (!doc || doc.permission === 'view' || revision.current === savedRevision.current) return
     const captured = revision.current
     setSaveState('saving')
 
@@ -164,6 +169,11 @@ export function BuilderPage() {
     )
   }
 
+  // A form shared with you as "can view" opens as a preview: the questions and
+  // the results are the point, and offering editing controls that every save
+  // would bounce is worse than not offering them.
+  const readOnly = doc.permission === 'view'
+
   const focus =
     selection.kind === 'field'
       ? ({ kind: 'field', index: Math.max(0, doc.fields.findIndex((f) => f.id === selection.id)) } as const)
@@ -179,6 +189,7 @@ export function BuilderPage() {
             <input
               className="header-title grow"
               value={doc.title}
+              readOnly={readOnly}
               onChange={(event) => update({ title: event.target.value })}
               aria-label="Form title"
               placeholder="Untitled form"
@@ -200,18 +211,41 @@ export function BuilderPage() {
               <Eye size={15} />
               <span className="hidden-sm">Preview</span>
             </a>
-            <button
-              className={doc.published ? 'btn' : 'btn btn-primary'}
-              onClick={() => update({ published: !doc.published })}
-            >
-              <Rocket size={15} />
-              {doc.published ? 'Unpublish' : 'Publish'}
-            </button>
+            {!readOnly && (
+              <button
+                className={doc.published ? 'btn' : 'btn btn-primary'}
+                onClick={() => update({ published: !doc.published })}
+              >
+                <Rocket size={15} />
+                {doc.published ? 'Unpublish' : 'Publish'}
+              </button>
+            )}
           </>
         }
       />
 
-      {tab === 'build' && (
+      {readOnly && (
+        <div className="banner">
+          <Eye size={15} />
+          <span>
+            <b>Read-only.</b> {doc.groupName ? `${doc.groupName} shared this form with you` : 'This form was shared with you'} so you
+            can see its questions and results. Ask a manager of that group if you need to change it.
+          </span>
+        </div>
+      )}
+
+      {tab === 'build' && readOnly && (
+        <div className="builder-canvas" style={{ gridColumn: '1 / -1' }}>
+          <div className="canvas-bar">
+            <span className="muted small">The form as respondents see it. Nothing here is recorded.</span>
+          </div>
+          <div className="canvas-frame">
+            <FormRunner form={doc} preview embedded focus={focus} />
+          </div>
+        </div>
+      )}
+
+      {tab === 'build' && !readOnly && (
         <div className={classes('builder', showInspector && 'show-inspector')}>
           <QuestionRail
             fields={doc.fields}
@@ -254,7 +288,7 @@ export function BuilderPage() {
         </div>
       )}
 
-      {tab === 'design' && (
+      {tab === 'design' && !readOnly && (
         <DesignTab
           doc={doc}
           onThemeChange={(theme: Theme) => update({ theme })}
@@ -262,7 +296,13 @@ export function BuilderPage() {
         />
       )}
 
-      {tab === 'share' && <ShareTab doc={doc} onPublishChange={(published) => update({ published })} />}
+      {tab === 'share' && (
+        <ShareTab
+          doc={doc}
+          onPublishChange={(published) => update({ published })}
+          onAccessChange={(access) => update({ access })}
+        />
+      )}
     </div>
   )
 }

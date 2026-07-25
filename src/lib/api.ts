@@ -2,13 +2,34 @@
 // errors arrive as { error } JSON, which we surface as a thrown ApiError so
 // callers can just try/catch.
 
-import type { Analytics, FormDoc, FormSummary, PublicForm, ResponseRecord, UploadRecord, User } from './types'
+import type {
+  AdminUser,
+  Analytics,
+  AuditEntry,
+  FormDoc,
+  FormShare,
+  FormSummary,
+  Group,
+  GroupDetail,
+  GroupMember,
+  GroupRole,
+  InstanceOverview,
+  Invite,
+  PublicForm,
+  ResponseRecord,
+  SystemRole,
+  UploadRecord,
+  User,
+} from './types'
 
 export class ApiError extends Error {
   status: number
-  constructor(message: string, status: number) {
+  /** Set when the server wants the visitor sent to the sign-in screen. */
+  requiresAuth: boolean
+  constructor(message: string, status: number, requiresAuth = false) {
     super(message)
     this.status = status
+    this.requiresAuth = requiresAuth
   }
 }
 
@@ -25,7 +46,7 @@ async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
   const data = text ? safeParse(text) : null
 
   if (!response.ok) {
-    throw new ApiError(data?.error || `Request failed (${response.status})`, response.status)
+    throw new ApiError(data?.error || `Request failed (${response.status})`, response.status, !!data?.requiresAuth)
   }
   return data as T
 }
@@ -45,20 +66,85 @@ export const api = {
   me: () => request<{ user: User | null }>('/api/auth/me'),
   login: (email: string, password: string) =>
     request<{ user: User }>('/api/auth/login', { method: 'POST', body: json({ email, password }) }),
-  register: (email: string, password: string, name: string) =>
-    request<{ user: User }>('/api/auth/register', { method: 'POST', body: json({ email, password, name }) }),
+  /** Whether this instance still needs its first admin, and whether an invite is valid. */
+  registration: (invite?: string) =>
+    request<{ firstRun: boolean; inviteRequired: boolean; invite: { email: string; groupName: string | null } | null }>(
+      `/api/auth/registration${invite ? `?invite=${encodeURIComponent(invite)}` : ''}`,
+    ),
+  register: (email: string, password: string, name: string, invite?: string) =>
+    request<{ user: User }>('/api/auth/register', {
+      method: 'POST',
+      body: json({ email, password, name, invite }),
+    }),
   logout: () => request<{ ok: true }>('/api/auth/logout', { method: 'POST' }),
+  updateProfile: (name: string) =>
+    request<{ user: User }>('/api/auth/profile', { method: 'PUT', body: json({ name }) }),
+  changePassword: (currentPassword: string, newPassword: string) =>
+    request<{ ok: true }>('/api/auth/password', {
+      method: 'POST',
+      body: json({ currentPassword, newPassword }),
+    }),
+  logoutEverywhere: () => request<{ ok: true }>('/api/auth/logout-all', { method: 'POST' }),
+
+  // --- Groups ---
+  listGroups: () => request<{ groups: Group[] }>('/api/groups'),
+  createGroup: (name: string, description: string) =>
+    request<{ group: Group }>('/api/groups', { method: 'POST', body: json({ name, description }) }),
+  getGroup: (id: string) => request<GroupDetail>(`/api/groups/${id}`),
+  updateGroup: (id: string, patch: { name?: string; description?: string }) =>
+    request<{ group: Group }>(`/api/groups/${id}`, { method: 'PATCH', body: json(patch) }),
+  deleteGroup: (id: string) => request<{ ok: true }>(`/api/groups/${id}`, { method: 'DELETE' }),
+  addMember: (groupId: string, userId: string, role: GroupRole) =>
+    request<{ members: GroupMember[] }>(`/api/groups/${groupId}/members`, {
+      method: 'POST',
+      body: json({ userId, role }),
+    }),
+  setMemberRole: (groupId: string, userId: string, role: GroupRole) =>
+    request<{ members: GroupMember[] }>(`/api/groups/${groupId}/members/${userId}`, {
+      method: 'PATCH',
+      body: json({ role }),
+    }),
+  removeMember: (groupId: string, userId: string) =>
+    request<{ members: GroupMember[] }>(`/api/groups/${groupId}/members/${userId}`, { method: 'DELETE' }),
+
+  // --- Administration ---
+  adminOverview: () => request<InstanceOverview>('/api/admin/overview'),
+  adminUsers: () => request<{ users: AdminUser[]; groups: Group[] }>('/api/admin/users'),
+  updateUser: (id: string, patch: { role?: SystemRole; status?: 'active' | 'suspended'; name?: string }) =>
+    request<{ user: AdminUser }>(`/api/admin/users/${id}`, { method: 'PATCH', body: json(patch) }),
+  deleteUser: (id: string) => request<{ ok: true }>(`/api/admin/users/${id}`, { method: 'DELETE' }),
+  resetUserPassword: (id: string, password: string) =>
+    request<{ ok: true }>(`/api/admin/users/${id}/password`, { method: 'POST', body: json({ password }) }),
+  revokeUserSessions: (id: string) =>
+    request<{ ok: true }>(`/api/admin/users/${id}/revoke-sessions`, { method: 'POST' }),
+  listInvites: () => request<{ invites: Invite[] }>('/api/admin/invites'),
+  createInvite: (body: { email: string; role: SystemRole; groupId: string | null; groupRole: GroupRole }) =>
+    request<{ invite: Invite }>('/api/admin/invites', { method: 'POST', body: json(body) }),
+  revokeInvite: (token: string) =>
+    request<{ ok: true }>(`/api/admin/invites/${token}`, { method: 'DELETE' }),
+  auditLog: () => request<{ entries: AuditEntry[] }>('/api/admin/audit'),
 
   // --- Forms ---
   listForms: () => request<{ forms: FormSummary[] }>('/api/forms'),
-  createForm: (title: string) =>
-    request<{ form: FormDoc }>('/api/forms', { method: 'POST', body: json({ title }) }),
+  createForm: (title: string, groupId: string) =>
+    request<{ form: FormDoc }>('/api/forms', { method: 'POST', body: json({ title, groupId }) }),
   getForm: (id: string) => request<{ form: FormDoc }>(`/api/forms/${id}`),
   saveForm: (id: string, patch: Partial<FormDoc>) =>
     request<{ form: FormDoc }>(`/api/forms/${id}`, { method: 'PUT', body: json(patch) }),
   deleteForm: (id: string) => request<{ ok: true }>(`/api/forms/${id}`, { method: 'DELETE' }),
-  duplicateForm: (id: string) =>
-    request<{ form: FormDoc }>(`/api/forms/${id}/duplicate`, { method: 'POST' }),
+  duplicateForm: (id: string, groupId?: string) =>
+    request<{ form: FormDoc }>(`/api/forms/${id}/duplicate`, { method: 'POST', body: json({ groupId }) }),
+
+  // --- Sharing a form with other groups ---
+  listShares: (id: string) =>
+    request<{ shares: FormShare[]; candidates: { id: string; name: string }[] }>(`/api/forms/${id}/shares`),
+  setShare: (id: string, groupId: string, access: 'edit' | 'view') =>
+    request<{ shares: FormShare[] }>(`/api/forms/${id}/shares/${groupId}`, {
+      method: 'PUT',
+      body: json({ access }),
+    }),
+  removeShare: (id: string, groupId: string) =>
+    request<{ shares: FormShare[] }>(`/api/forms/${id}/shares/${groupId}`, { method: 'DELETE' }),
 
   // --- Responses ---
   listResponses: (id: string) =>
