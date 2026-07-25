@@ -1,4 +1,8 @@
-// Public API: everything a respondent's browser touches. No sign-in.
+// Respondent-facing API: everything a person filling in a form touches.
+//
+// "Public" is per form. A form set to 'internal' — the default — requires a
+// signed-in account here, exactly as the owner-side API does, and records who
+// answered. Only a form explicitly set to 'link' is reachable anonymously.
 //
 // A response id doubles as the capability to write to that response: it is 24
 // random characters, handed out only to the browser that started it, and it
@@ -31,10 +35,23 @@ function rateLimited(req) {
   return entry.count > RATE_LIMIT
 }
 
-/** Loads a published form by slug. Unpublished forms are invisible here. */
+/**
+ * Loads a published form by slug and enforces its access setting. Unpublished
+ * forms are invisible here regardless.
+ *
+ * `requiresAuth` in the 401 body is what tells the client to send the person to
+ * the sign-in screen and back again, rather than showing a dead end.
+ */
 function loadPublishedForm(req, res, next) {
   const row = getFormRowBySlug(req.params.slug)
   if (!row || !row.published) return res.status(404).json({ error: 'This form is not available.' })
+
+  if (row.access !== 'link' && !req.user) {
+    return res
+      .status(401)
+      .json({ error: 'Sign in to fill in this form.', requiresAuth: true, title: row.title })
+  }
+
   req.form = row
   next()
 }
@@ -44,6 +61,18 @@ function loadOpenResponse(req, res, next) {
   const row = db.prepare('SELECT * FROM responses WHERE id = ?').get(req.params.responseId)
   if (!row) return res.status(404).json({ error: 'Response not found' })
   if (row.completed) return res.status(409).json({ error: 'This response was already submitted.' })
+
+  const form = db.prepare('SELECT access FROM forms WHERE id = ?').get(row.form_id)
+  // A response started while signed in stays bound to that account, so a leaked
+  // response id cannot be used to write answers in someone else's name.
+  if (row.user_id) {
+    if (!req.user) return res.status(401).json({ error: 'Sign in to continue.', requiresAuth: true })
+    if (req.user.id !== row.user_id)
+      return res.status(403).json({ error: 'This response belongs to someone else.' })
+  } else if (form?.access !== 'link' && !req.user) {
+    return res.status(401).json({ error: 'Sign in to continue.', requiresAuth: true })
+  }
+
   req.response = row
   next()
 }
@@ -66,10 +95,16 @@ publicRouter.post('/forms/:slug/responses', loadPublishedForm, (req, res) => {
 
   const id = newId(24)
   db.prepare(
-    'INSERT INTO responses (id, form_id, started_at, completed, meta_json) VALUES (?, ?, ?, 0, ?)',
+    'INSERT INTO responses (id, form_id, user_id, started_at, completed, meta_json) VALUES (?, ?, ?, ?, 0, ?)',
   ).run(
     id,
     req.form.id,
+    // Attribution follows the form's own setting, never merely who happens to
+    // be signed in. A form shared as "anyone with the link" is understood to be
+    // anonymous, and recording an identity against it because the respondent
+    // had a session open would quietly break that promise — which for a
+    // feedback tool is the difference between honest answers and careful ones.
+    req.form.access === 'link' ? null : (req.user?.id ?? null),
     now(),
     JSON.stringify({
       userAgent: String(req.get('user-agent') || '').slice(0, 300),

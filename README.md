@@ -45,8 +45,13 @@ No third-party account, no per-response pricing, no data leaving your server.
   tracking, and one-click **CSV** or **JSON** export.
 - **File uploads** — respondents attach files, you download them from the
   responses table. Size and type limits are yours to set.
-- **Accounts** — email and password sign-in; each account only ever sees its own
-  forms and responses. Respondents never need an account.
+- **Invite-only accounts** — nobody can sign themselves up. Administrators issue
+  single-use invitations bound to one email address.
+- **Groups** — forms belong to a team, not a person. Members are managers,
+  editors or viewers, and a form's results can be shared across groups.
+- **Internal by default** — a form requires a sign-in unless a manager
+  deliberately opens it to anyone with the link, and open forms stay genuinely
+  anonymous.
 - **Embeddable** — copy an `<iframe>` snippet from the Share tab and drop the
   form into any page.
 - **Light and dark** — the editor follows your system theme, or you can pin it.
@@ -63,9 +68,10 @@ No third-party account, no per-response pricing, no data leaving your server.
 docker compose up -d
 ```
 
-Then open <http://localhost:8080> and create your account. The image is built
-and published automatically to GitHub Container Registry on every push to
-`main`, for both `amd64` and `arm64`.
+Then open <http://localhost:8080> and register — on a fresh instance the first
+account created becomes the administrator, and everyone else joins by
+invitation. The image is built and published automatically to GitHub Container
+Registry on every push to `main`, for both `amd64` and `arm64`.
 
 To change the port, pin an image tag, or adjust upload and rate limits, copy the
 environment template first:
@@ -100,6 +106,7 @@ Data goes to `./data/` (gitignored) rather than a Docker volume.
 | `npm run build` | Type-check and build the production bundle into `dist/` |
 | `npm start` | Serve `dist/` and the API from one Node process |
 | `npm run preview` | Preview the built bundle with Vite's static server |
+| `npm run set-password` | Break-glass password reset (see [Accounts](#accounts-groups-and-access)) |
 
 You can also run the dev environment in a container, with no local Node at all:
 
@@ -113,10 +120,16 @@ docker compose --profile dev up dev     # -> http://localhost:5173
 server/                Node + Express API, no build step
   db.mjs               node:sqlite connection, schema migrations, ids
   auth.mjs             scrypt password hashing, DB-backed sessions
+  permissions.mjs      roles, group membership, form access — every check
+  invites.mjs          single-use, email-bound invitations
+  audit.mjs            append-only log of access changes
   model.mjs            form document <-> tables, answer flattening
-  routes/auth.mjs      register, login, logout, session
-  routes/forms.mjs     owner API: forms, responses, export, analytics, files
+  routes/auth.mjs      register (invite-gated), login, logout, self-service
+  routes/admin.mjs     accounts, invitations, audit log — administrators only
+  routes/groups.mjs    groups and their membership
+  routes/forms.mjs     forms, responses, export, analytics, files, sharing
   routes/public.mjs    respondent API: read form, save answers, upload, submit
+  set-password.mjs     break-glass password reset from the command line
   index.mjs            app wiring, security headers, static bundle, SPA fallback
 
 src/                   React + TypeScript front end
@@ -124,6 +137,7 @@ src/                   React + TypeScript front end
   components/          shared UI, the form runner, chart primitives
   components/builder/  question rail, inspector, logic editor, design, share
   pages/               auth, dashboard, builder, results, analytics, fill
+                       plus admin, groups and account
 ```
 
 A few decisions worth knowing about:
@@ -144,7 +158,14 @@ A few decisions worth knowing about:
   on, which is what makes partial responses and drop-off analytics possible.
 - **Response ids are capabilities.** A response id is 24 random characters,
   given only to the browser that started it, and it stops accepting writes once
-  submitted.
+  submitted. A response started while signed in is bound to that account, so a
+  leaked id cannot be used to answer in someone else's name.
+- **One place decides access.** Every permission check funnels through
+  `formAccess()` in `permissions.mjs`, so route handlers never assemble their
+  own rules. Routes answer `404` rather than `403` when you have no access at
+  all, so the API never confirms an id exists to someone who cannot see it.
+- **Forms outlive people.** A form belongs to a group, so deleting the account
+  that created it leaves the form and its responses with the group.
 
 ## Configuration
 
@@ -158,6 +179,7 @@ unconfigured container still runs correctly.
 | `FORMFLOW_MAX_UPLOAD_MB` | `10` | Largest file a respondent may attach |
 | `FORMFLOW_RATE_LIMIT` | `120` | Public write requests per IP per minute |
 | `FORMFLOW_SESSION_TTL_DAYS` | `30` | How long a sign-in lasts |
+| `FORMFLOW_INVITE_TTL_DAYS` | `7` | How long an invitation stays redeemable |
 | `FORMFLOW_SECURE_COOKIES` | `false` | Force the `Secure` cookie flag (see below) |
 | `FORMFLOW_TRUST_PROXY` | `true` | Trust `X-Forwarded-*` for client IP and scheme |
 
@@ -171,7 +193,9 @@ not, set `FORMFLOW_SECURE_COOKIES=true` and make sure the app is never reachable
 over plain HTTP — otherwise sign-in will silently fail.
 
 Public form pages (`/f/...`) deliberately allow framing so embeds work. Every
-other route is `SAMEORIGIN`.
+other route is `SAMEORIGIN`. State-changing API requests additionally require
+the browser-set `Origin` to match the host, on top of the `SameSite=Lax` session
+cookie.
 
 ## Backups
 
@@ -190,13 +214,80 @@ To keep the data somewhere you can back up directly, swap the named volume in
 `compose.yaml` for a host path such as `./data:/data` — that directory must be
 writable by uid 1000.
 
-## A note on accounts
+## Accounts, groups and access
 
-Anyone who can reach the instance can register an account and build their own
-forms. Accounts are isolated from each other — nobody can see anyone else's
-forms or responses — but registration itself is open. If that is not what you
-want, keep the port behind a VPN, Tailscale, or an authenticating reverse proxy,
-or register your accounts and then block `POST /api/auth/register` at the proxy.
+FormFlow is **invite-only**. Registration is closed to anyone without an
+invitation, with exactly one exception: on a brand-new instance with no accounts
+at all, the first person to register becomes the administrator. From then on
+`POST /api/auth/register` refuses anything but a valid invitation.
+
+### Roles
+
+Two independent axes. Someone's system role says what they can do to the
+*instance*; their group role says what they can do to a *team's forms*.
+
+| System role | |
+| --- | --- |
+| **Administrator** | Runs the instance: accounts, invitations, every group and every form. |
+| **Member** | Sees only what their groups give them. |
+
+| Group role | |
+| --- | --- |
+| **Manager** | Adds and removes members, and fully controls the group's forms — including deleting them, moving them and changing who may fill them in. |
+| **Editor** | Creates and edits the group's forms, and reads their results. |
+| **Viewer** | Reads results only. The builder opens read-only. |
+
+### Groups and sharing
+
+Every form belongs to exactly one group, which owns it and its responses. A form
+can additionally be shared with other groups as **can view results** or **can
+edit the form**.
+
+A share never grants more than the recipient's own role allows: someone who is a
+viewer in their group still only views, even where the share says "can edit".
+Nor does a share ever confer *manage* — only the owning group can delete a form
+or re-share it.
+
+### Inviting people
+
+Administrators create invitations in **Admin → Invitations**. There is no mail
+server: you copy the link and send it however your organisation already
+communicates. An invitation works **once**, only for the **address it was issued
+to**, and expires after `FORMFLOW_INVITE_TTL_DAYS` (7 by default). Forwarding
+the link to someone else is useless.
+
+### Who can fill a form in
+
+Each form chooses, in its **Share** tab:
+
+- **Signed-in people only** (the default) — anyone with an account on the
+  instance can respond, and each response records **who** sent it.
+- **Anyone with the link** — no sign-in, and responses are **anonymous**. No
+  identity is recorded even for respondents who happen to be signed in, so
+  "anonymous feedback" means what it says.
+
+Only a group manager can change this setting or publish a form to the world.
+
+### If you get locked out
+
+An administrator resets other people's passwords from **Admin → People**. For
+the last administrator locking *themselves* out, there is a break-glass reset
+that runs on the machine holding the database:
+
+```bash
+npm run set-password -- someone@example.com 'a new passphrase' --admin
+```
+
+It revokes every existing session for the account and records itself in the
+audit log. Shell access to the data directory is the authority — anyone who has
+it could rewrite the hash by hand anyway.
+
+### Audit log
+
+**Admin → Activity** records account, group, membership and sharing changes plus
+sign-ins. Form edits and responses are deliberately not logged — they are
+already visible in the product, and logging them would bury the entries that
+matter.
 
 There is deliberately no password reset flow, because there is no mail server to
 send one. To reset a password, delete the row from the `users` table and
