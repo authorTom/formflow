@@ -1,15 +1,17 @@
 # FormFlow
 
-A self-hosted **conversational form and survey builder** — one full-screen
-question at a time, so people actually reach the end. Build a form by dragging
-questions into place, branch people down different paths with conditional logic,
-theme it to match your brand, then share a link or embed it. Responses,
-completion rates and per-question drop-off land in your own dashboard.
+**A self-hosted conversational form and survey builder — one full-screen
+question at a time, so people actually reach the end.**
 
-Everything lives in a single SQLite file inside a Docker volume you control.
-No third-party account, no per-response pricing, no data leaving your server.
+Build a form by dragging questions into place, branch people down different
+paths with conditional logic, theme it to match your brand, then share a link or
+embed it. Responses, completion rates and per-question drop-off land in your own
+dashboard.
 
-![FormFlow's builder — question list, live preview and per-question settings with conditional logic](docs/screenshots/builder.png)
+Everything lives in a single SQLite file inside a Docker volume you control. No
+third-party account, no per-response pricing, no data leaving your server.
+
+![The builder — question list, live preview and per-question settings with conditional logic](docs/screenshots/builder.png)
 
 | The respondent's view — one question at a time | Analytics — completion rate and drop-off |
 | --- | --- |
@@ -17,7 +19,24 @@ No third-party account, no per-response pricing, no data leaving your server.
 | **Design — themes, fonts and backgrounds** | **Responses — a row per submission, exportable** |
 | ![The design tab with theme presets, colour pickers and a live preview](docs/screenshots/design.png) | ![The responses table with one row per response](docs/screenshots/responses.png) |
 
-## Features
+## Why it exists
+
+A form that shows twenty fields at once tells the person filling it in exactly
+how much of their evening it is going to cost, and a good proportion of them
+close the tab there and then. Asking one question at a time hides the length and
+keeps the momentum, which is why the commercial tools all work that way.
+
+Those tools also price per response, keep your data on their infrastructure, and
+turn "who can see the results" into a billing tier. For anything with real
+answers in it — staff feedback, incident reports, anything a governance team
+would want a view on — that is the wrong trade.
+
+FormFlow is the same interaction model, running on your own hardware, with the
+access rules that internal use actually needs: invite-only accounts, forms owned
+by teams rather than individuals, and anonymous forms that are genuinely
+anonymous.
+
+## What it does
 
 - **One question at a time** — a full-screen, keyboard-driven flow with smooth
   transitions. `Enter` continues, `A`/`B`/`C` pick a choice, `Y`/`N` answer
@@ -31,10 +50,9 @@ No third-party account, no per-response pricing, no data leaving your server.
 - **Answer recall** — quote an earlier answer inside a later question:
   *"How likely are you to recommend us, Ada?"*
 - **Themes** — six presets plus your own accent, background and text colours,
-  three font families, and solid, gradient or dotted backgrounds. Every form
-  gets its own look.
+  three font families, and solid, gradient or dotted backgrounds.
 - **Multiple endings** — send happy and unhappy respondents to different closing
-  screens, each with an optional call-to-action button or an automatic redirect.
+  screens, each with an optional call-to-action button or automatic redirect.
 - **Welcome screens**, progress bar and question numbering, all optional.
 - **Live preview while you build** — the middle pane *is* the real form,
   rendered by the same code respondents get. Nothing is recorded.
@@ -54,7 +72,7 @@ No third-party account, no per-response pricing, no data leaving your server.
   anonymous.
 - **Embeddable** — copy an `<iframe>` snippet from the Share tab and drop the
   form into any page.
-- **Light and dark** — the editor follows your system theme, or you can pin it.
+- **Light and dark**, following the system theme or pinned.
 - **Responsive** — the builder works down to a tablet; the form itself is built
   for phones first.
 
@@ -68,10 +86,12 @@ No third-party account, no per-response pricing, no data leaving your server.
 docker compose up -d
 ```
 
-Then open <http://localhost:8080> and register — on a fresh instance the first
+Open **<http://localhost:8080>** and register. On a fresh instance the first
 account created becomes the administrator, and everyone else joins by
-invitation. The image is built and published automatically to GitHub Container
-Registry on every push to `main`, for both `amd64` and `arm64`.
+invitation — so claim that account before sharing the address.
+
+The image is published to GitHub Container Registry on every push to `main`, for
+both `amd64` and `arm64`.
 
 To change the port, pin an image tag, or adjust upload and rate limits, copy the
 environment template first:
@@ -81,24 +101,22 @@ cp .env.example .env    # edit as needed
 docker compose up -d
 ```
 
-To build the image from source instead of pulling it, uncomment the `build:`
-block in [`compose.yaml`](compose.yaml) and run `docker compose up -d --build`.
+To build from source instead of pulling, uncomment the `build:` block in
+[`compose.yaml`](compose.yaml) and run `docker compose up -d --build`.
 
-### Development server
+### From source
 
-Requires **Node 24 or newer** — FormFlow uses Node's built-in `node:sqlite`, so
-there is no native module to compile and nothing to install beyond npm packages.
+Needs **Node 24 or newer** — FormFlow uses Node's built-in `node:sqlite`, so
+there is no native module to compile.
 
 ```bash
 npm install
 npm run dev
 ```
 
-This starts two processes together: the Vite dev server with hot reload on
-<http://localhost:5173>, and the API on port 8080 which Vite proxies to. Open
-the 5173 address.
-
-Data goes to `./data/` (gitignored) rather than a Docker volume.
+This starts the Vite dev server with hot reload on <http://localhost:5173> and
+the API on 8080, which Vite proxies to. Open the 5173 address. Data goes to
+`./data/` (gitignored) rather than a Docker volume.
 
 | Script | What it does |
 | --- | --- |
@@ -108,13 +126,32 @@ Data goes to `./data/` (gitignored) rather than a Docker volume.
 | `npm run preview` | Preview the built bundle with Vite's static server |
 | `npm run set-password` | Break-glass password reset (see [Accounts](#accounts-groups-and-access)) |
 
-You can also run the dev environment in a container, with no local Node at all:
+Or run the dev environment in a container, with no local Node at all:
 
 ```bash
 docker compose --profile dev up dev     # -> http://localhost:5173
 ```
 
-## How it fits together
+## Configuration
+
+Every setting has a sensible default, so an unconfigured container still runs
+correctly. See [`.env.example`](.env.example) for the annotated version.
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `PORT` | `8080` | Port the server listens on |
+| `FORMFLOW_DATA_DIR` | `/data` (Docker), `./data` (dev) | Where `formflow.db` and `uploads/` live |
+| `FORMFLOW_MAX_UPLOAD_MB` | `10` | Largest file a respondent may attach |
+| `FORMFLOW_RATE_LIMIT` | `120` | Public write requests per IP per minute |
+| `FORMFLOW_SESSION_TTL_DAYS` | `30` | How long a sign-in lasts |
+| `FORMFLOW_INVITE_TTL_DAYS` | `7` | How long an invitation stays redeemable |
+| `FORMFLOW_SECURE_COOKIES` | `false` | Force the `Secure` cookie flag (see [Security](#security)) |
+| `FORMFLOW_TRUST_PROXY` | `true` | Trust `X-Forwarded-*` for client IP and scheme |
+
+Everything else — themes, question logic, who may fill a form in — is edited in
+the app itself, not in environment variables.
+
+## How it's built
 
 ```
 server/                Node + Express API, no build step
@@ -148,12 +185,10 @@ A few decisions worth knowing about:
   image needs no compiler and no native rebuild when Node updates. WAL mode is
   on, because every public form view writes an analytics row.
 - **Sessions, not JWTs.** Session tokens are random and stored in the database,
-  so signing out actually revokes access. Passwords use scrypt from
-  `node:crypto` — memory-hard, and no bcrypt build step.
+  so signing out actually revokes access.
 - **The whole form saves at once.** The builder autosaves the entire document
-  (fields and endings included) as one transaction. Field ids are preserved
-  across saves, so logic rules and collected answers keep pointing at the same
-  question.
+  as one transaction. Field ids survive saves, so logic rules and collected
+  answers keep pointing at the same question.
 - **Answers save as you go.** Each answer is written when the respondent moves
   on, which is what makes partial responses and drop-off analytics possible.
 - **Response ids are capabilities.** A response id is 24 random characters,
@@ -167,59 +202,11 @@ A few decisions worth knowing about:
 - **Forms outlive people.** A form belongs to a group, so deleting the account
   that created it leaves the form and its responses with the group.
 
-## Configuration
-
-Every setting is an environment variable with a sensible default, so an
-unconfigured container still runs correctly.
-
-| Variable | Default | What it does |
-| --- | --- | --- |
-| `PORT` | `8080` | Port the server listens on |
-| `FORMFLOW_DATA_DIR` | `/data` (Docker), `./data` (dev) | Where `formflow.db` and `uploads/` live |
-| `FORMFLOW_MAX_UPLOAD_MB` | `10` | Largest file a respondent may attach |
-| `FORMFLOW_RATE_LIMIT` | `120` | Public write requests per IP per minute |
-| `FORMFLOW_SESSION_TTL_DAYS` | `30` | How long a sign-in lasts |
-| `FORMFLOW_INVITE_TTL_DAYS` | `7` | How long an invitation stays redeemable |
-| `FORMFLOW_SECURE_COOKIES` | `false` | Force the `Secure` cookie flag (see below) |
-| `FORMFLOW_TRUST_PROXY` | `true` | Trust `X-Forwarded-*` for client IP and scheme |
-
-See [`.env.example`](.env.example) for the annotated version.
-
-## Deploying behind a proxy
-
-Session cookies are marked `Secure` automatically when the request arrives over
-HTTPS, which works as long as your proxy sets `X-Forwarded-Proto`. If it does
-not, set `FORMFLOW_SECURE_COOKIES=true` and make sure the app is never reachable
-over plain HTTP — otherwise sign-in will silently fail.
-
-Public form pages (`/f/...`) deliberately allow framing so embeds work. Every
-other route is `SAMEORIGIN`. State-changing API requests additionally require
-the browser-set `Origin` to match the host, on top of the `SameSite=Lax` session
-cookie.
-
-## Backups
-
-Everything is in the volume: `formflow.db` (plus its `-wal` and `-shm`
-companions) and the `uploads/` directory. The simplest safe backup is to stop
-the container and copy the directory:
-
-```bash
-docker compose stop web
-docker run --rm -v formflow_formflow-data:/data -v "$PWD:/backup" alpine \
-  tar czf /backup/formflow-backup.tar.gz -C /data .
-docker compose start web
-```
-
-To keep the data somewhere you can back up directly, swap the named volume in
-`compose.yaml` for a host path such as `./data:/data` — that directory must be
-writable by uid 1000.
-
 ## Accounts, groups and access
 
 FormFlow is **invite-only**. Registration is closed to anyone without an
 invitation, with exactly one exception: on a brand-new instance with no accounts
-at all, the first person to register becomes the administrator. From then on
-`POST /api/auth/register` refuses anything but a valid invitation.
+at all, the first person to register becomes the administrator.
 
 ### Roles
 
@@ -268,6 +255,28 @@ Each form chooses, in its **Share** tab:
 
 Only a group manager can change this setting or publish a form to the world.
 
+### Audit log
+
+**Admin → Activity** records account, group, membership and sharing changes plus
+sign-ins. Form edits and responses are deliberately not logged — they are
+already visible in the product, and logging them would bury the entries that
+matter.
+
+## Security
+
+- Passwords use **scrypt** from `node:crypto` — memory-hard, and no bcrypt build
+  step.
+- Sessions are **random tokens stored in the database**, in an httpOnly,
+  `SameSite=Lax` cookie. Signing out revokes access immediately.
+- State-changing API requests additionally require the browser-set `Origin` to
+  match the host.
+- Public form pages (`/f/...`) deliberately allow framing so embeds work. Every
+  other route is `SAMEORIGIN`.
+- Session cookies are marked `Secure` automatically when the request arrives
+  over HTTPS, which works as long as your proxy sets `X-Forwarded-Proto`. If it
+  does not, set `FORMFLOW_SECURE_COOKIES=true` and make sure the app is never
+  reachable over plain HTTP — otherwise sign-in will silently fail.
+
 ### If you get locked out
 
 An administrator resets other people's passwords from **Admin → People**. For
@@ -282,17 +291,26 @@ It revokes every existing session for the account and records itself in the
 audit log. Shell access to the data directory is the authority — anyone who has
 it could rewrite the hash by hand anyway.
 
-### Audit log
+There is deliberately no self-service password reset flow, because there is no
+mail server to send one.
 
-**Admin → Activity** records account, group, membership and sharing changes plus
-sign-ins. Form edits and responses are deliberately not logged — they are
-already visible in the product, and logging them would bury the entries that
-matter.
+## Backing up
 
-There is deliberately no password reset flow, because there is no mail server to
-send one. To reset a password, delete the row from the `users` table and
-register again.
+Everything is in the volume: `formflow.db` (plus its `-wal` and `-shm`
+companions) and the `uploads/` directory. The simplest safe backup is to stop
+the container and copy the directory:
+
+```bash
+docker compose stop web
+docker run --rm -v formflow_formflow-data:/data -v "$PWD:/backup" alpine \
+  tar czf /backup/formflow-backup.tar.gz -C /data .
+docker compose start web
+```
+
+To keep the data somewhere you can back up directly, swap the named volume in
+`compose.yaml` for a host path such as `./data:/data` — that directory must be
+writable by uid 1000.
 
 ## Licence
 
-[MIT](LICENSE)
+MIT — see [LICENSE](LICENSE).
